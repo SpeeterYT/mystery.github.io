@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Locked</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card: #ffffff;
+    --border: #e2e2e2;
+    --text: #1a1a1a;
+    --muted: #767676;
+    --accent: #1a1a1a;
+    --error: #b3261e;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--text);
+    padding: 24px;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 32px;
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0 0 20px;
+    text-align: center;
+  }
+
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  input[type="password"] {
+    font-size: 15px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    outline: none;
+    width: 100%;
+  }
+
+  input[type="password"]:focus {
+    border-color: var(--accent);
+  }
+
+  button {
+    font-size: 15px;
+    font-weight: 500;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+
+  button:hover {
+    opacity: 0.9;
+  }
+
+  .message {
+    margin-top: 14px;
+    font-size: 13px;
+    text-align: center;
+    min-height: 16px;
+  }
+
+  .message.error { color: var(--error); }
+  .message.muted { color: var(--muted); }
+
+  .reveal {
+    display: none;
+    text-align: center;
+  }
+
+  .reveal.show { display: block; }
+
+  .reveal p {
+    font-size: 15px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+  <div class="card">
+
+    <div id="lockedView">
+      <h1>Enter password</h1>
+      <form id="loginForm">
+        <input type="password" id="passwordInput" placeholder="Password" autocomplete="off" required>
+        <button type="submit">Unlock</button>
+      </form>
+      <div class="message" id="message"></div>
+    </div>
+
+    <div class="reveal" id="revealView">
+      <p id="revealText"></p>
+    </div>
+
+  </div>
+
+<script>
+  // ----- CONFIGURE THESE -----
+  const CORRECT_PASSWORD = "changeme";
+  const UNLOCK_DATE = "2026-12-25T00:00:00"; // local time, ISO format
+  const REVEAL_TEXT = "This is the hidden message.";
+  // ---------------------------
+
+  const form = document.getElementById("loginForm");
+  const input = document.getElementById("passwordInput");
+  const message = document.getElementById("message");
+  const lockedView = document.getElementById("lockedView");
+  const revealView = document.getElementById("revealView");
+  const revealText = document.getElementById("revealText");
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+
+    if (input.value !== CORRECT_PASSWORD) {
+      message.textContent = "Incorrect password.";
+      message.className = "message error";
+      return;
+    }
+
+    const now = new Date();
+    const unlockDate = new Date(UNLOCK_DATE);
+
+    if (now < unlockDate) {
+      message.textContent = "Not available until " + unlockDate.toLocaleString();
+      message.className = "message muted";
+      return;
+    }
+
+    revealText.textContent = REVEAL_TEXT;
+    lockedView.style.display = "none";
+    revealView.classList.add("show");
+  });
+</script>
+
+</body>
+</html>
