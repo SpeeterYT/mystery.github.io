@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Scanner</title>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0f13;
+    --card: #17181d;
+    --text: #f2f2f2;
+    --muted: #9a9ba3;
+    --accent: #4f8cff;
+    --border: #2a2b32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 60px;
+  }
+  h1 {
+    font-size: 1.3rem;
+    margin: 0 0 16px;
+  }
+  #video-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    aspect-ratio: 1 / 1;
+    background: #000;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  #status {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    min-height: 1.2em;
+    text-align: center;
+  }
+  #result-card {
+    margin-top: 20px;
+    width: 100%;
+    max-width: 480px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    display: none;
+  }
+  #result-card.show { display: block; }
+  #result-format {
+    color: var(--accent);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  #result-text {
+    word-break: break-all;
+    font-size: 1rem;
+    line-height: 1.4;
+  }
+  button {
+    margin-top: 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  select {
+    margin-top: 12px;
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    max-width: 480px;
+    width: 100%;
+  }
+</style>
+</head>
+<body>
+  <h1>Code Scanner</h1>
+
+  <div id="video-wrap">
+    <video id="video" playsinline muted></video>
+  </div>
+
+  <select id="camera-select"></select>
+  <div id="zoom-wrap" style="display:none; width:100%; max-width:480px; margin-top:10px;">
+    <label for="zoom-slider" style="font-size:0.85rem; color:var(--muted);">Zoom</label>
+    <input type="range" id="zoom-slider" style="width:100%;">
+  </div>
+  <div id="status">Kamera wird gestartet…</div>
+
+  <div id="result-card">
+    <div id="result-format"></div>
+    <div id="result-text"></div>
+    <button id="copy-btn">Kopieren</button>
+  </div>
+
+<script>
+(async function () {
+  const statusEl = document.getElementById('status');
+  const videoEl = document.getElementById('video');
+  const cameraSelect = document.getElementById('camera-select');
+  const resultCard = document.getElementById('result-card');
+  const resultFormat = document.getElementById('result-format');
+  const resultText = document.getElementById('result-text');
+  const copyBtn = document.getElementById('copy-btn');
+  const zoomWrap = document.getElementById('zoom-wrap');
+  const zoomSlider = document.getElementById('zoom-slider');
+
+  zoomSlider.addEventListener('input', () => {
+    if (activeTrack) {
+      activeTrack.applyConstraints({ advanced: [{ zoom: Number(zoomSlider.value) }] }).catch(() => {});
+    }
+  });
+
+  if (!window.ZXing) {
+    statusEl.textContent = 'Scanner-Bibliothek konnte nicht geladen werden.';
+    return;
+  }
+
+  // Decode a broad set of formats, including 2D codes beyond plain QR.
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.QR_CODE,
+    ZXing.BarcodeFormat.DATA_MATRIX,
+    ZXing.BarcodeFormat.AZTEC,
+    ZXing.BarcodeFormat.PDF_417,
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.CODE_128,
+    ZXing.BarcodeFormat.CODE_39,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.ITF,
+  ]);
+  // TRY_HARDER makes ZXing run extra binarization/rotation passes per frame.
+  // Much slower per frame, but far more forgiving of imperfect, handdrawn
+  // or low-contrast codes — this is a big part of why apps like Binary Eye
+  // read things a bare-bones scanner misses.
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+  const codeReader = new ZXing.BrowserMultiFormatReader(hints, 300); // 300ms between scans, TRY_HARDER is expensive
+  let controls = null;
+  let activeTrack = null;
+
+  function buildConstraints(deviceId) {
+    const video = deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: 'environment' } };
+    // Ask for a high-resolution feed and continuous autofocus. A bare-bones
+    // getUserMedia() call often falls back to a low-res, fixed-focus stream,
+    // which is the other big reason handdrawn/small codes read poorly.
+    video.width = { ideal: 1920 };
+    video.height = { ideal: 1920 };
+    video.advanced = [{ focusMode: 'continuous' }];
+    return { video, audio: false };
+  }
+
+  function setupZoomControl(track) {
+    activeTrack = track;
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (!caps.zoom) {
+      zoomWrap.style.display = 'none';
+      return;
+    }
+    zoomWrap.style.display = 'block';
+    zoomSlider.min = caps.zoom.min;
+    zoomSlider.max = caps.zoom.max;
+    zoomSlider.step = caps.zoom.step || 0.1;
+    zoomSlider.value = track.getSettings().zoom || caps.zoom.min;
+  }
+
+  async function listCameras() {
+    try {
+      const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+      cameraSelect.innerHTML = '';
+      devices.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Kamera ${i + 1}`;
+        cameraSelect.appendChild(opt);
+      });
+      // Prefer a back/rear camera if labeled
+      const back = devices.find(d => /back|rear|environment/i.test(d.label));
+      if (back) cameraSelect.value = back.deviceId;
+      return devices;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function startScan(deviceId) {
+    if (controls) {
+      controls.stop();
+      controls = null;
+    }
+    statusEl.textContent = 'Suche nach Code…';
+    try {
+      controls = await codeReader.decodeFromConstraints(
+        buildConstraints(deviceId),
+        videoEl,
+        (result, err) => {
+          if (result) {
+            resultFormat.textContent = result.getBarcodeFormat
+              ? String(result.getBarcodeFormat())
+              : (result.format || '');
+            resultText.textContent = result.getText ? result.getText() : result.text;
+            resultCard.classList.add('show');
+            statusEl.textContent = 'Code erkannt.';
+          }
+          // NotFoundException fires continuously while scanning — ignore it.
+        }
+      );
+      const track = videoEl.srcObject && videoEl.srcObject.getVideoTracks()[0];
+      if (track) setupZoomControl(track);
+    } catch (e) {
+      statusEl.textContent = 'Kamerazugriff fehlgeschlagen: ' + e.message;
+    }
+  }
+
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(resultText.textContent).then(() => {
+      copyBtn.textContent = 'Kopiert!';
+      setTimeout(() => (copyBtn.textContent = 'Kopieren'), 1200);
+    });
+  });
+
+  cameraSelect.addEventListener('change', () => startScan(cameraSelect.value));
+
+  // Request permission first so device labels are populated, then list + start.
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    stream.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    statusEl.textContent = 'Kamera-Berechtigung verweigert.';
+    return;
+  }
+
+  await listCameras();
+  await startScan(cameraSelect.value);
+})();
+</script>
+</body>
+</html>
