@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Data Matrix Scanner</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --border:#2a2f3a; --text:#e6edf3;
+    --muted:#8b949e; --accent:#3fb950; --accent2:#58a6ff; --danger:#f85149;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; align-items:center;
+    padding:16px; padding-top:calc(16px + env(safe-area-inset-top,0px));
+    padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));
+  }
+  h1{font-size:1.15rem; margin:0 0 4px; text-align:center;}
+  p.sub{color:var(--muted); font-size:.85rem; margin:0 0 16px; text-align:center; max-width:520px;}
+  .card{
+    background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:14px; width:100%; max-width:520px; margin-bottom:14px;
+  }
+  .video-wrap{
+    position:relative; width:100%; aspect-ratio:1/1; background:#000;
+    border-radius:10px; overflow:hidden; margin-bottom:10px;
+  }
+  video{width:100%; height:100%; object-fit:cover; display:block;}
+  canvas.overlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none;}
+  .roi-hint{
+    position:absolute; inset:12%; border:2px dashed rgba(255,255,255,.35); border-radius:10px;
+    pointer-events:none;
+  }
+  .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  select,button,input[type=file]{
+    background:#21262d; color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:9px 12px; font-size:.9rem; cursor:pointer;
+  }
+  button.primary{background:var(--accent2); color:#04121f; border:none; font-weight:600;}
+  button.stop{background:var(--danger); color:#210505; border:none; font-weight:600;}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  label.chk{display:flex; align-items:center; gap:6px; font-size:.85rem; color:var(--muted);}
+  .status{font-size:.85rem; color:var(--muted); margin-top:8px; min-height:1.2em;}
+  .result{
+    margin-top:10px; padding:10px; border-radius:8px; background:#0d1f14;
+    border:1px solid #1d4428; word-break:break-all; font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:.85rem; display:none;
+  }
+  .result.show{display:block;}
+  .history{max-height:160px; overflow-y:auto; margin-top:8px;}
+  .history-item{
+    display:flex; justify-content:space-between; gap:8px; padding:6px 0;
+    border-bottom:1px solid var(--border); font-size:.8rem;
+  }
+  .history-item .t{word-break:break-all; font-family:ui-monospace,Menlo,Consolas,monospace;}
+  .history-item .meta{color:var(--muted); white-space:nowrap; font-size:.72rem;}
+  .copy-btn{background:none; border:1px solid var(--border); font-size:.7rem; padding:2px 6px;}
+  h2{font-size:.9rem; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  details{margin-top:6px;}
+  summary{cursor:pointer; color:var(--accent2); font-size:.85rem;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;}
+</style>
+</head>
+<body>
+
+<h1>📦 Data Matrix Scanner</h1>
+<p class="sub">Läuft komplett im Browser via ZXing-C++ (WebAssembly). Für schlecht lesbare Codes wird "tryHarder" plus zusätzliche Bildvorverarbeitung genutzt.</p>
+
+<div class="card">
+  <div class="video-wrap">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay" class="overlay"></canvas>
+    <div class="roi-hint"></div>
+  </div>
+
+  <div class="row">
+    <select id="cameraSelect" style="flex:1; min-width:140px;"></select>
+    <button id="torchBtn" title="Blitz/Taschenlampe umschalten">🔦</button>
+  </div>
+
+  <div class="row" style="margin-top:8px;">
+    <button id="startBtn" class="primary" style="flex:1;">Scan starten</button>
+    <button id="stopBtn" class="stop" style="flex:1;" disabled>Stop</button>
+  </div>
+
+  <details>
+    <summary>Erweiterte Optionen</summary>
+    <div class="grid2">
+      <label class="chk"><input type="checkbox" id="optHarder" checked> tryHarder (gründlicher, langsamer)</label>
+      <label class="chk"><input type="checkbox" id="optRotate" checked> tryRotate</label>
+      <label class="chk"><input type="checkbox" id="optInvert" checked> tryInvert (helle Codes)</label>
+      <label class="chk"><input type="checkbox" id="optEnhance" checked> Kontrast-Vorverarbeitung</label>
+      <label class="chk"><input type="checkbox" id="optROI" checked> Nur Bildmitte scannen (schneller)</label>
+      <label class="chk"><input type="checkbox" id="optUpscale"> 2× Upscale bei kleinen Codes</label>
+    </div>
+  </details>
+
+  <div class="status" id="status">Kamera-Berechtigung wird benötigt …</div>
+  <div class="result" id="result"></div>
+</div>
+
+<div class="card">
+  <h2>Aus Bilddatei scannen</h2>
+  <p class="sub" style="margin-bottom:8px;">Falls die Live-Kamera einen Code nicht erkennt: Foto machen/hochladen — die Seite probiert mehrere Verstärkungs-Varianten automatisch durch.</p>
+  <input type="file" id="fileInput" accept="image/*" capture="environment" />
+  <div class="status" id="fileStatus"></div>
+</div>
+
+<div class="card">
+  <h2>Verlauf</h2>
+  <div class="history" id="history"><span class="status">Noch keine Treffer.</span></div>
+</div>
+
+<script type="module">
+import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@2/dist/reader/index.js";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), statusEl = $("status");
+const resultEl = $("result"), historyEl = $("history"), fileStatus = $("fileStatus");
+const cameraSelect = $("cameraSelect"), torchBtn = $("torchBtn");
+const startBtn = $("startBtn"), stopBtn = $("stopBtn");
+const octx = overlay.getContext("2d");
+
+let stream = null, scanning = false, rafId = null, lastDecodeAt = 0;
+let track = null, torchOn = false;
+const history = [];
+
+function opts() {
+  return {
+    formats: ["DataMatrix"],
+    tryHarder: $("optHarder").checked,
+    tryRotate: $("optRotate").checked,
+    tryInvert: $("optInvert").checked,
+    tryDownscale: true,
+    maxNumberOfSymbols: 1,
+  };
+}
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "sine"; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.15, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.18);
+  } catch (_) {}
+  if (navigator.vibrate) navigator.vibrate(80);
+}
+
+function addHistory(text, source) {
+  history.unshift({ text, source, time: new Date() });
+  renderHistory();
+}
+
+function renderHistory() {
+  if (!history.length) {
+    historyEl.innerHTML = '<span class="status">Noch keine Treffer.</span>';
+    return;
+  }
+  historyEl.innerHTML = "";
+  for (const h of history.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "history-item";
+    const time = h.time.toLocaleTimeString();
+    row.innerHTML = `
+      <div class="t">${escapeHtml(h.text)}</div>
+      <div class="meta">${h.source} · ${time} <button class="copy-btn">Kopieren</button></div>
+    `;
+    row.querySelector(".copy-btn").addEventListener("click", () => {
+      navigator.clipboard?.writeText(h.text).catch(() => {});
+    });
+    historyEl.appendChild(row);
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function showResult(text) {
+  resultEl.textContent = text;
+  resultEl.classList.add("show");
+}
+
+// --- Camera enumeration ---
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter((d) => d.kind === "videoinput");
+  cameraSelect.innerHTML = "";
+  cams.forEach((c, i) => {
+    const opt = document.createElement("option");
+    opt.value = c.deviceId;
+    opt.textContent = c.label || `Kamera ${i + 1}`;
+    cameraSelect.appendChild(opt);
+  });
+  // Prefer a "back"/"environment" camera by label heuristic
+  const back = cams.findIndex((c) => /back|rear|environment/i.test(c.label));
+  if (back >= 0) cameraSelect.selectedIndex = back;
+}
+
+async function startCamera(deviceId) {
+  stopCamera();
+  const constraints = {
+    video: deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: "environment" } },
+    audio: false,
+  };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = stream;
+  await video.play();
+  track = stream.getVideoTracks()[0];
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  torchBtn.style.display = caps.torch ? "inline-block" : "none";
+  resizeOverlay();
+  if (!cameraSelect.options.length || !cameraSelect.value) await listCameras();
+}
+
+function stopCamera() {
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null; track = null;
+}
+
+function resizeOverlay() {
+  overlay.width = video.videoWidth || video.clientWidth;
+  overlay.height = video.videoHeight || video.clientHeight;
+}
+
+// --- Image preprocessing helpers ---
+function grayscaleContrast(ctx, w, h, contrast = 1.6) {
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const factor = (259 * (contrast * 255 + 255)) / (255 * (259 - contrast * 255));
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    let v = factor * (gray - 128) + 128;
+    v = Math.max(0, Math.min(255, v));
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  return img;
+}
+
+function drawROI(srcCanvas, useROI) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const c = document.createElement("canvas");
+  const ctx2 = c.getContext("2d");
+  if (useROI) {
+    const size = Math.min(w, h) * 0.8;
+    const sx = (w - size) / 2, sy = (h - size) / 2;
+    c.width = size; c.height = size;
+    ctx2.drawImage(srcCanvas, sx, sy, size, size, 0, 0, size, size);
+  } else {
+    c.width = w; c.height = h;
+    ctx2.drawImage(srcCanvas, 0, 0);
+  }
+  return c;
+}
+
+function upscale(canvas, factor = 2) {
+  const c = document.createElement("canvas");
+  c.width = canvas.width * factor; c.height = canvas.height * factor;
+  const ctx2 = c.getContext("2d");
+  ctx2.imageSmoothingEnabled = true;
+  ctx2.drawImage(canvas, 0, 0, c.width, c.height);
+  return c;
+}
+
+// --- Live scan loop ---
+async function scanLoop() {
+  if (!scanning) return;
+  const now = performance.now();
+  if (now - lastDecodeAt < 220) {
+    rafId = requestAnimationFrame(scanLoop);
+    return;
+  }
+  lastDecodeAt = now;
+
+  try {
+    resizeOverlay();
+    const frame = document.createElement("canvas");
+    frame.width = video.videoWidth; frame.height = video.videoHeight;
+    const fctx = frame.getContext("2d");
+    fctx.drawImage(video, 0, 0);
+
+    let candidate = drawROI(frame, $("optROI").checked);
+    if ($("optUpscale").checked) candidate = upscale(candidate, 2);
+
+    let results = await tryDecode(candidate);
+
+    if (!results.length && $("optEnhance").checked) {
+      const cctx = candidate.getContext("2d");
+      grayscaleContrast(cctx, candidate.width, candidate.height, 1.7);
+      results = await tryDecode(candidate);
+    }
+
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+
+    if (results.length) {
+      const r = results[0];
+      showResult(r.text);
+      setStatus("✅ Code erkannt");
+      addHistory(r.text, "Live-Kamera");
+      beep();
+      drawBox(r, candidate.width, candidate.height, $("optROI").checked);
+    } else {
+      setStatus("Suche Data-Matrix-Code …");
+    }
+  } catch (err) {
+    setStatus("Fehler beim Scannen: " + err.message);
+  }
+
+  rafId = requestAnimationFrame(scanLoop);
+}
+
+async function tryDecode(canvas) {
+  const ctx2 = canvas.getContext("2d");
+  const imageData = ctx2.getImageData(0, 0, canvas.width, canvas.height);
+  return await readBarcodes(imageData, opts());
+}
+
+function drawBox(result, cw, ch, wasROI) {
+  if (!result.position) return;
+  const sx = overlay.width / cw, sy = overlay.height / ch;
+  const offX = wasROI ? overlay.width * 0.1 : 0;
+  const offY = wasROI ? overlay.height * 0.1 : 0;
+  const p = result.position;
+  const pts = [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft];
+  octx.strokeStyle = "#3fb950";
+  octx.lineWidth = 3;
+  octx.beginPath();
+  pts.forEach((pt, i) => {
+    const x = pt.x * sx * (wasROI ? cw / (overlay.width * 0.8) : 1) + offX;
+    const y = pt.y * sy * (wasROI ? ch / (overlay.height * 0.8) : 1) + offY;
+    i === 0 ? octx.moveTo(x, y) : octx.lineTo(x, y);
+  });
+  octx.closePath();
+  octx.stroke();
+}
+
+// --- Controls ---
+startBtn.addEventListener("click", async () => {
+  try {
+    await startCamera(cameraSelect.value || undefined);
+    scanning = true;
+    startBtn.disabled = true; stopBtn.disabled = false;
+    setStatus("Suche Data-Matrix-Code …");
+    resultEl.classList.remove("show");
+    scanLoop();
+  } catch (err) {
+    setStatus("Kamerazugriff fehlgeschlagen: " + err.message);
+  }
+});
+
+stopBtn.addEventListener("click", () => {
+  scanning = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  stopCamera();
+  startBtn.disabled = false; stopBtn.disabled = true;
+  setStatus("Gestoppt.");
+});
+
+cameraSelect.addEventListener("change", async () => {
+  if (stream) await startCamera(cameraSelect.value);
+});
+
+torchBtn.addEventListener("click", async () => {
+  if (!track) return;
+  try {
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+  } catch (_) {
+    setStatus("Blitz wird von dieser Kamera nicht unterstützt.");
+  }
+});
+
+// --- File upload with multi-variant retry ---
+$("fileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileStatus.textContent = "Analysiere Bild …";
+
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+  await img.decode();
+
+  const base = document.createElement("canvas");
+  base.width = img.naturalWidth; base.height = img.naturalHeight;
+  base.getContext("2d").drawImage(img, 0, 0);
+
+  const variants = [];
+  variants.push({ name: "Original", canvas: base });
+
+  const gray = document.createElement("canvas");
+  gray.width = base.width; gray.height = base.height;
+  gray.getContext("2d").drawImage(base, 0, 0);
+  grayscaleContrast(gray.getContext("2d"), gray.width, gray.height, 1.7);
+  variants.push({ name: "Graustufen + Kontrast", canvas: gray });
+
+  variants.push({ name: "2× Upscale", canvas: upscale(base, 2) });
+
+  const grayUp = upscale(gray, 2);
+  variants.push({ name: "Graustufen + 2× Upscale", canvas: grayUp });
+
+  let found = null, usedVariant = null;
+  for (const v of variants) {
+    const results = await tryDecode(v.canvas);
+    if (results.length) { found = results[0]; usedVariant = v.name; break; }
+  }
+
+  if (found) {
+    fileStatus.textContent = `✅ Erkannt über Variante: ${usedVariant}`;
+    showResult(found.text);
+    addHistory(found.text, `Datei (${usedVariant})`);
+    beep();
+  } else {
+    fileStatus.textContent = "❌ Kein Data-Matrix-Code erkannt, auch nicht mit Verstärkung.";
+  }
+});
+
+// --- Init ---
+(async () => {
+  try {
+    await navigator.mediaDevices.getUserMedia({ video: true }).then((s) => s.getTracks().forEach((t) => t.stop()));
+    await listCameras();
+    setStatus('Bereit. Auf "Scan starten" tippen.');
+  } catch (err) {
+    setStatus("Keine Kamera-Berechtigung: " + err.message + " — Datei-Upload funktioniert trotzdem.");
+  }
+})();
+</script>
+</body>
+</html>
